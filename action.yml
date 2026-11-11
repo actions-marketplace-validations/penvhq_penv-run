@@ -1,0 +1,50 @@
+# Runs one command with this org's secrets in ITS environment, and nothing else's.
+#
+# THIS FILE IS PUBLISHED. Customers reference it by full commit SHA, which means it runs inside
+# their CI with their OIDC token. Three consequences govern everything below:
+#
+#  1. It is part of their supply chain. Every change ships to every customer that repins, so it
+#     stays small, boring, and dependency-free. No third-party actions and no npm packages — a
+#     compromised dependency here would run in every customer's pipeline (CVE-2025-30066 is
+#     exactly that, via a moved tag).
+#  2. It is a JavaScript action, not a composite one, and that is load-bearing. Delivery must be
+#     an action in the CALLER'S OWN JOB — a reusable workflow cannot deliver values, because the
+#     runner DROPS secret-tainted job outputs rather than masking them. And it must be JavaScript,
+#     because a composite action has no `post:` at all: the credential would then have to cross a
+#     step boundary through a step output or a file to reach the revoke, and both of those are the
+#     exposure this action exists to avoid.
+#  3. It reads NO repository secrets. The identity is proved per run by an OIDC token the runner
+#     mints on demand, exactly as `.github/workflows/connect.yml` does.
+#
+# What it does NOT promise: safety from a malicious step in the same job. Co-location is
+# disclosure — CVE-2025-30066's payload read `Runner.Worker` memory, lifted the runner's own secret
+# table and double-base64'd it past the log masker. Revocation at the end of the job is likewise
+# best effort: what bounds a delivered credential is the server's short TTL.
+name: penv-cloud run
+description: Run a command with penv-cloud secrets in its environment, and nowhere else.
+
+inputs:
+  audience:
+    description: The penv-cloud org id. Also the OIDC audience.
+    required: true
+  run:
+    description: The command to run. It receives the secrets; no other step does.
+    required: true
+  api-origin:
+    description: The penv-cloud API origin.
+    required: false
+    default: https://penv.cloud
+  files:
+    description: >-
+      For tools that cannot read an environment variable. One NAME=path/name per line: the value is
+      written to a 0600 file under $RUNNER_TEMP, NAME is set to that path, and the file is removed
+      before this step ends. Use it only where a file is genuinely required.
+    required: false
+
+runs:
+  using: node24
+  main: main.mjs
+  # Revokes the credential this run minted. `always()` because a failed build has the same
+  # credential to take back as a successful one.
+  post: post.mjs
+  post-if: always()
